@@ -1,0 +1,2 @@
+# Keep file bytes exactly as committed so manifest.sha256 stays valid on Windows clones.
+* -text

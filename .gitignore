@@ -1,0 +1,9 @@
+TestResults/
+*.zip
+*.log
+events.jsonl
+summary.json
+native-*.log
+.omc/
+.omx/
+.DS_Store
