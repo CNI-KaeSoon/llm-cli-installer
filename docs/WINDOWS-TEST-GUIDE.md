@@ -47,3 +47,8 @@
 - npm을 `cmd.exe`로 실행할 때 인자의 cmd 메타문자(`&`, `|`, `^`, `%` 등) quoting.
 - 실제 `pymanager list --only-managed --format=json` 출력으로 inventory가 관리 런타임에 도달하는지 확인.
 - UacHelper elevation 경로 연결(설치 전용)과 UAC 거부/시간 초과 동작.
+- 공식 설치 스크립트 redirect(Codex→releases.openai.com, Claude→downloads.claude.ai) 실제 설치 성공과 로그의 downloadSha256/executedSha256 확인.
+- hostile npm prefix(cmd 메타문자) 거부와 npm.cmd 정상 설치.
+- timeout 시 하위 프로세스 잔존 여부(process tree 종료 미구현).
+- Anthropic/OpenAI 서명 인증서의 실제 O 값.
+- 이전 gate를 열기 전 필수: RemovalStarted 복구 판정을 journal prefix 직접 조회로 강화, 복구 불가 journal 정리 절차, PATH snapshot 정리.

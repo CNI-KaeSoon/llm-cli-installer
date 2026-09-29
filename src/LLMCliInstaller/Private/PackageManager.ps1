@@ -35,22 +35,104 @@ function Convert-NativeLog {
     }
 }
 
+function Invoke-InstallerHttpRequest {
+    # One HTTPS request without automatic redirects; the body is read (up to 1 MiB + 1 byte) only for 2xx responses.
+    param([Parameter(Mandatory=$true)][uri]$Uri, [int]$TimeoutSeconds = 60)
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $request = [Net.HttpWebRequest][Net.WebRequest]::Create($Uri)
+    $request.AllowAutoRedirect = $false
+    $request.Timeout = $TimeoutSeconds * 1000
+    $request.ReadWriteTimeout = $TimeoutSeconds * 1000
+    $response = $null
+    try {
+        try {
+            $response = $request.GetResponse()
+        } catch [Net.WebException] {
+            if ($_.Exception.Response) { $response = $_.Exception.Response } else { throw ('E_NETWORK: ' + $_.Exception.Status) }
+        }
+        $statusCode = [int]$response.StatusCode
+        $location = [string]$response.Headers['Location']
+        $body = [byte[]]@()
+        if ($statusCode -ge 200 -and $statusCode -lt 300) {
+            $limit = 1048577
+            $memory = New-Object IO.MemoryStream
+            $stream = $response.GetResponseStream()
+            $buffer = New-Object byte[] 8192
+            while ($memory.Length -lt $limit) {
+                $wanted = [int][Math]::Min([long]$buffer.Length, ([long]$limit - $memory.Length))
+                $read = $stream.Read($buffer, 0, $wanted)
+                if ($read -le 0) { break }
+                $memory.Write($buffer, 0, $read)
+            }
+            $body = $memory.ToArray()
+        }
+        return [pscustomobject]@{ StatusCode = $statusCode; Location = $location; Body = $body }
+    } finally {
+        if ($response) { $response.Close() }
+    }
+}
+
+function Get-InstallerScriptContent {
+    # Every hop (including the first) must be HTTPS on the default port, without userinfo, on an allowlisted host.
+    param([Parameter(Mandatory=$true)][string]$Uri, [string[]]$AllowedHosts = @(), [int]$MaxHops = 3, [scriptblock]$Fetch)
+    if (-not $Fetch) { $Fetch = { param($requestUri) Invoke-InstallerHttpRequest -Uri $requestUri } }
+    try { $current = New-Object Uri($Uri) } catch { throw 'E_INTEGRITY: installer URI not allowed' }
+    $hops = 0
+    $response = $null
+    while ($true) {
+        if ($current.Scheme -ne 'https' -or -not $current.IsDefaultPort -or $current.UserInfo -or @($AllowedHosts) -notcontains $current.Host) { throw 'E_INTEGRITY: installer URI not allowed' }
+        $response = & $Fetch $current
+        $code = [int]$response.StatusCode
+        if ($code -ge 200 -and $code -lt 300) { break }
+        if (@(301, 302, 303, 307, 308) -contains $code) {
+            if (-not $response.Location) { throw 'E_NETWORK: redirect without location' }
+            try { $current = New-Object Uri($current, [string]$response.Location) } catch { throw 'E_NETWORK: invalid redirect location' }
+            $hops++
+            if ($hops -gt $MaxHops) { throw 'E_NETWORK: too many redirects' }
+            continue
+        }
+        throw ('E_NETWORK: HTTP ' + $code)
+    }
+    $bytes = [byte[]]@($response.Body)
+    if ($bytes.Length -eq 0) { throw 'E_INTEGRITY: installer script is empty' }
+    if ($bytes.Length -gt 1048576) { throw 'E_INTEGRITY: installer script is larger than 1 MiB' }
+    try { $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes) } catch { throw 'E_INTEGRITY: installer script is not valid UTF-8' }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    if ($text.IndexOf([char]0) -ge 0) { throw 'E_INTEGRITY: installer script contains NUL characters' }
+    $trimmed = $text.TrimStart()
+    if ($trimmed.Length -eq 0 -or $trimmed[0] -eq '<') { throw 'E_INTEGRITY: installer response is not a script (HTML or blank)' }
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $hash = ([BitConverter]::ToString($hasher.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant() } finally { $hasher.Dispose() }
+    return [pscustomobject]@{ Text = $text; DownloadSha256 = $hash; FinalHost = $current.Host; Hops = $hops; DownloadBytes = $bytes.Length }
+}
+
 function Install-OfficialPowerShellScript {
-    param([string]$Uri, [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 900)
-    $allowedHosts = @('chatgpt.com', 'claude.ai', 'antigravity.google')
-    $parsed = [uri]$Uri
-    if ($parsed.Scheme -ne 'https' -or $allowedHosts -notcontains $parsed.Host) { throw 'E_INTEGRITY_FAILURE: untrusted installer host' }
+    param([string]$Uri, [string[]]$AllowedHosts = @(), [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 900, [scriptblock]$Fetch, $Context = $null, [string]$ComponentId)
+    if (@($AllowedHosts).Count -eq 0) { throw 'E_INTEGRITY: no installer host allowlist' }
+    $fetchArguments = @{}
+    if ($Fetch) { $fetchArguments.Fetch = $Fetch }
+    $content = Get-InstallerScriptContent -Uri $Uri -AllowedHosts $AllowedHosts @fetchArguments
+    $powershell = Get-TrustedWindowsPowerShellPath
     $temporary = Join-Path ([IO.Path]::GetTempPath()) ('llm-cli-installer-' + [guid]::NewGuid().ToString('N') + '.ps1')
     try {
-        $request = [Net.WebRequest]::Create($parsed)
-        $request.AllowAutoRedirect = $false
-        $response = $request.GetResponse()
-        if ([int]$response.StatusCode -lt 200 -or [int]$response.StatusCode -ge 300) { throw 'E_NETWORK' }
-        $reader = New-Object IO.StreamReader($response.GetResponseStream())
-        [IO.File]::WriteAllText($temporary, $reader.ReadToEnd(), (New-Object Text.UTF8Encoding($false)))
-        $reader.Dispose()
-        $response.Dispose()
-        return Invoke-SafeProcess -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $temporary) -TimeoutSeconds $TimeoutSeconds -Environment $Environment -CloseInput
+        # BOM keeps non-ASCII script text intact under Windows PowerShell 5.1.
+        $executedBytes = [byte[]]@((New-Object Text.UTF8Encoding($true)).GetPreamble()) + (New-Object Text.UTF8Encoding($false)).GetBytes($content.Text)
+        [IO.File]::WriteAllBytes($temporary, [byte[]]$executedBytes)
+        # The hash of what is really on disk (and will be run), read back after writing.
+        $onDisk = [IO.File]::ReadAllBytes($temporary)
+        $executedHasher = [Security.Cryptography.SHA256]::Create()
+        try { $executedSha256 = ([BitConverter]::ToString($executedHasher.ComputeHash($onDisk)) -replace '-', '').ToLowerInvariant() } finally { $executedHasher.Dispose() }
+        $executedLength = $onDisk.Length
+        if ($null -ne $Context) {
+            Write-RunEvent $Context 'install' 'script-fetched' $ComponentId '공식 설치 스크립트를 받아 실행합니다.' 0 @{ installerHost=$content.FinalHost; downloadBytes=$content.DownloadBytes; downloadSha256=$content.DownloadSha256; executedBytes=$executedLength; executedSha256=$executedSha256 }
+        }
+        $process = Invoke-SafeProcess -FilePath $powershell -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $temporary) -TimeoutSeconds $TimeoutSeconds -Environment $Environment -CloseInput
+        Add-Member -InputObject $process -NotePropertyName InstallerDownloadSha256 -NotePropertyValue $content.DownloadSha256 -Force
+        Add-Member -InputObject $process -NotePropertyName InstallerExecutedSha256 -NotePropertyValue $executedSha256 -Force
+        Add-Member -InputObject $process -NotePropertyName InstallerFinalHost -NotePropertyValue $content.FinalHost -Force
+        Add-Member -InputObject $process -NotePropertyName InstallerDownloadBytes -NotePropertyValue $content.DownloadBytes -Force
+        Add-Member -InputObject $process -NotePropertyName InstallerExecutedBytes -NotePropertyValue $executedLength -Force
+        return $process
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
     }
@@ -66,7 +148,31 @@ function Get-NpmEffectivePrefix {
     if ($process.ExitCode -ne 0) { return $null }
     $value = ([string]$process.StdOut).Trim()
     if (-not $value) { return $null }
+    if ($value -match $script:CmdUnsafePattern) { return $null }
+    if (-not ($value -match '^[A-Za-z]:[\\/]' -or [IO.Path]::IsPathRooted($value))) { return $null }
     return $value
+}
+
+function Get-NpmInstallArgumentList {
+    # The official registry is forced for the global setting and for the package scope, because a scope registry outranks the global one.
+    param([Parameter(Mandatory=$true)][string]$Package, [string]$Prefix)
+    if ($Package -cnotmatch '^(@[a-z0-9-~][a-z0-9-._~]*/)?[a-z0-9-~][a-z0-9-._~]*$') { throw "E_INTERNAL_STATE: invalid npm package name: $Package" }
+    $registry = 'https://registry.npmjs.org/'
+    $arguments = @('install', '--global', ('--registry=' + $registry))
+    $scope = [regex]::Match($Package, '^@([^/]+)/')
+    if ($scope.Success) { $arguments += ('--@' + $scope.Groups[1].Value + ':registry=' + $registry) }
+    if ($Prefix) { $arguments += @('--prefix', $Prefix) }
+    $arguments += $Package
+    return $arguments
+}
+
+function Get-TrustedWindowsPowerShellPath {
+    # Windows PowerShell 5.1 is started by absolute path under SystemRoot, never by name from PATH.
+    if ($env:SystemRoot) {
+        $candidate = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    throw 'E_NO_TRUSTED_INSTALL_CHANNEL: Windows PowerShell 5.1 not found'
 }
 
 function Get-NpmGlobalPackageInventory {
@@ -90,6 +196,7 @@ function Get-NpmUninstallArgumentList {
     param([Parameter(Mandatory=$true)][string]$Prefix, [Parameter(Mandatory=$true)][string]$Package)
     if ($script:NpmRemovablePackages -notcontains $Package) { throw "E_INTERNAL_STATE: npm package not allowlisted for removal: $Package" }
     if (-not ($Prefix -match '^[A-Za-z]:[\\/]' -or [IO.Path]::IsPathRooted($Prefix))) { throw 'E_INTERNAL_STATE: npm evidence prefix must be absolute' }
+    if ($Prefix -match $script:CmdUnsafePattern) { throw 'E_INTERNAL_STATE: npm prefix contains unsafe characters' }
     return @('uninstall', '-g', '--prefix', $Prefix, $Package)
 }
 

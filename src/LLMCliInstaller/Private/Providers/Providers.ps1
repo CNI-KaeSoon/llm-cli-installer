@@ -26,16 +26,20 @@ function Install-Component {
         'official-script' {
             $environment = @{}
             if ($Id -eq 'codex') { $environment.CODEX_NON_INTERACTIVE = '1' }
-            $process = Install-OfficialPowerShellScript -Uri $Definition.InstallerUri -Environment $environment
+            $process = Install-OfficialPowerShellScript -Uri $Definition.InstallerUri -AllowedHosts @($Definition.InstallerHosts) -Environment $environment -Context $Context -ComponentId $Id
             return [pscustomobject]@{ Process=$process; StableCode=$(if ($process.ExitCode -eq 0) { 0 } elseif ($process.TimedOut) { 20 } else { 40 }); RestartRequired=$false }
         }
         'npm' {
             # §14.1: canonical npm target is the effective prefix; pin it explicitly when it is known.
-            $arguments = @('install', '--global', $Definition.Package)
             $prefix = Get-NpmEffectivePrefix
-            if ($prefix) { $arguments = @('install', '--global', '--prefix', $prefix, $Definition.Package) }
+            $arguments = Get-NpmInstallArgumentList -Package $Definition.Package -Prefix $prefix
             $process = Invoke-SafeProcess -FilePath 'npm' -ArgumentList $arguments -TimeoutSeconds 900 -CloseInput
-            return [pscustomobject]@{ Process=$process; StableCode=$(if ($process.ExitCode -eq 0) { 0 } else { 40 }); RestartRequired=$false }
+            $npmCode = 40
+            if ($process.ExitCode -eq 0) { $npmCode = 0 }
+            elseif ($process.ExitCode -eq 127) { $npmCode = 22 }
+            elseif ($process.TimedOut) { $npmCode = 20 }
+            elseif ($process.ExitCode -eq 126) { $npmCode = 21 }
+            return [pscustomobject]@{ Process=$process; StableCode=$npmCode; RestartRequired=$false }
         }
         'python-manager' {
             $manager = Invoke-WinGetInstall -PackageId $Definition.PackageId -VendorLog $vendorLog

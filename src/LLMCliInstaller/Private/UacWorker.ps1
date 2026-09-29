@@ -3,6 +3,8 @@
     [Parameter(Mandatory=$true)][string]$ResultPath,
     [Parameter(Mandatory=$true)][string]$MarkerPath
 )
+# Disabled until the elevation channel is hardened (SECURITY.md).
+exit 33
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json

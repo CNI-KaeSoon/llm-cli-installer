@@ -16,6 +16,42 @@ $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'src/LLMCliInstaller/LLMCliInstaller.psd1'
 
 try {
+    # Integrity gate: verifies manifest.sha256 before any module code is imported or run (also under -WhatIf).
+    $integrityFailure = $null
+    $manifestFile = Join-Path $PSScriptRoot 'manifest.sha256'
+    $manifestEntries = @{}
+    if (-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) {
+        $integrityFailure = 'manifest.sha256 없음'
+    } else {
+        foreach ($manifestLine in [IO.File]::ReadAllLines($manifestFile)) {
+            if ($manifestLine -notmatch '^([0-9a-f]{64})  (.+)$') { $integrityFailure = 'manifest.sha256 형식 오류'; break }
+            $entryHash = $Matches[1]
+            $entryPath = $Matches[2]
+            if ($entryPath.Contains(':') -or $entryPath.StartsWith('/') -or $entryPath.StartsWith('\') -or [IO.Path]::IsPathRooted($entryPath) -or ([regex]::Split($entryPath, '[\\/]') -contains '..')) { $integrityFailure = ('허용되지 않는 경로 ' + $entryPath); break }
+            if ($manifestEntries.ContainsKey($entryPath)) { $integrityFailure = ('중복 항목 ' + $entryPath); break }
+            $manifestEntries[$entryPath] = $entryHash
+        }
+    }
+    if (-not $integrityFailure) {
+        foreach ($entryPath in @($manifestEntries.Keys | Sort-Object)) {
+            $entryFile = Join-Path $PSScriptRoot $entryPath
+            if (-not (Test-Path -LiteralPath $entryFile -PathType Leaf)) { $integrityFailure = ('파일 없음 ' + $entryPath); break }
+            if ((Get-FileHash -LiteralPath $entryFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifestEntries[$entryPath]) { $integrityFailure = ('해시 불일치 ' + $entryPath); break }
+        }
+    }
+    if (-not $integrityFailure) {
+        $rootFull = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\', '/')
+        foreach ($candidate in Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Force) {
+            $relative = $candidate.FullName.Substring($rootFull.Length + 1).Replace('\', '/')
+            if ($relative.StartsWith('.git/')) { continue }
+            if (@('.ps1', '.psm1', '.psd1') -notcontains $candidate.Extension.ToLowerInvariant()) { continue }
+            if (-not $manifestEntries.ContainsKey($relative)) { $integrityFailure = ('manifest에 없는 실행 파일 ' + $relative); break }
+        }
+    }
+    if ($integrityFailure) {
+        [Console]::Error.WriteLine(('설치기 무결성 검증 실패: {0}. 공식 릴리스 ZIP을 다시 내려받고 SHA256을 확인하세요.' -f $integrityFailure))
+        exit 23
+    }
     $module = Import-Module $modulePath -Force -ErrorAction Stop -PassThru
     $arguments = @{
         Components = $Components

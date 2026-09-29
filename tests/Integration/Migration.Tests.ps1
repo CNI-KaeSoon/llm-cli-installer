@@ -98,12 +98,12 @@ Describe 'v2 migration orchestration with fake package managers' -Tag Integratio
             Should -Invoke Invoke-NpmUninstall -Times 0 -Exactly
         }
 
-        It 'blocks P0 provenance with 61 and keeps other components (run 60)' {
+        It 'blocks P0 provenance with 61 and keeps other components (run 61: no selected CLI succeeded)' {
             $script:fixture.GrokInventory = New-FixtureInventory -Id 'grok' -Grade 'P0'
             $result = Invoke-LlmCliInstaller -Components grok -NonInteractive -ExistingInstallPolicy Migrate -ConfirmMigration -MigrationComponents grok -LogRoot $script:logs -NoSupportBundle
             ($result.Components | Where-Object Id -eq 'grok').PrimaryCode | Should -Be 61
             ($result.Components | Where-Object Id -eq 'grok').MigrationState | Should -Be 'MigrationBlocked'
-            $result.ExitCode | Should -Be 60
+            $result.ExitCode | Should -Be 61
             Should -Invoke Invoke-NpmUninstall -Times 0 -Exactly
         }
 
@@ -277,11 +277,75 @@ Describe 'v2 migration orchestration with fake package managers' -Tag Integratio
                 Test-Path -LiteralPath (Join-Path (Join-Path $TestDrive 'state') 'migration-journal.jsonl') | Should -BeFalse
             }
 
-            It 'rejects the interactive B choice with zero removals and installs' {
+            It 'T5-3: does not offer the interactive B choice while the gate is closed and keeps the install' {
                 Mock Read-Host { if ($Prompt -like '*A/B*') { 'B' } else { '이전' } }
-                { Invoke-LlmCliInstaller -Components grok -LogRoot $script:logs -NoSupportBundle } | Should -Throw '*E_INVALID_ARGUMENT*'
+                { $script:t53 = Invoke-LlmCliInstaller -Components grok -LogRoot $script:logs -NoSupportBundle } | Should -Not -Throw
+                $script:t53.ExitCode | Should -Be 0
+                ($script:t53.Components | Where-Object Id -eq 'grok').MigrationState | Should -Be 'KeepSelected'
+                Should -Invoke Read-Host -Times 0 -Exactly -ParameterFilter { $Prompt -like '*A/B*' }
                 Should -Invoke Invoke-NpmUninstall -Times 0 -Exactly
                 Should -Invoke Install-Component -Times 0 -Exactly
+            }
+        }
+
+        Context 'component exception isolation (WP2)' {
+            BeforeEach {
+                $script:fixture.GrokInventory = $null
+                Mock Get-ComponentStatus {
+                    if (@('codex', 'grok') -contains $Id) { return [pscustomobject]@{ State='Missing'; Verification=$null } }
+                    [pscustomobject]@{ State='Satisfied'; Verification=[pscustomobject]@{ Version='1.0.0'; Process=[pscustomobject]@{ ResolvedPath='tool' } } }
+                }
+                $script:okInstall = { [pscustomobject]@{ Process=[pscustomobject]@{ ExitCode=0; StdErr=''; StdOut=''; CommandSummary='install' }; StableCode=0; RestartRequired=$false } }
+            }
+
+            It 'T2-1: an E_NETWORK exception in one component is recorded as 20 and the next component still installs' {
+                Mock Install-Component { if ($Id -eq 'codex') { throw 'E_NETWORK: simulated' }; & $script:okInstall }
+                $result = Invoke-LlmCliInstaller -Components codex, grok -NonInteractive -LogRoot $script:logs -NoSupportBundle
+                $codex = $result.Components | Where-Object Id -eq 'codex'
+                $codex.PrimaryCode | Should -Be 20
+                $codex.State | Should -Be 'InstallFailed'
+                ($result.Components | Where-Object Id -eq 'grok').State | Should -Be 'Verified'
+                Should -Invoke Install-Component -Times 1 -Exactly -ParameterFilter { $Id -eq 'grok' }
+                $result.ExitCode | Should -Be 60
+                Test-Path -LiteralPath (Join-Path $result.LogDirectory 'summary.json') | Should -BeTrue
+            }
+
+            It 'T2-2: E_INTEGRITY maps to 23 and a throwing verifier fails only that component' {
+                Mock Install-Component { if ($Id -eq 'codex') { throw 'E_INTEGRITY: x' }; & $script:okInstall }
+                $first = Invoke-LlmCliInstaller -Components codex -NonInteractive -LogRoot $script:logs -NoSupportBundle
+                ($first.Components | Where-Object Id -eq 'codex').PrimaryCode | Should -Be 23
+
+                Mock Install-Component { & $script:okInstall }
+                Mock Test-ComponentInstallation { throw 'verifier crashed' } -ParameterFilter { $Id -eq 'grok' }
+                $second = Invoke-LlmCliInstaller -Components codex, grok -NonInteractive -LogRoot (Join-Path $TestDrive ('logs-' + [guid]::NewGuid().ToString('N'))) -NoSupportBundle
+                $grok = $second.Components | Where-Object Id -eq 'grok'
+                $grok.State | Should -Be 'VerificationFailed'
+                $grok.PrimaryCode | Should -Be 40
+                ($second.Components | Where-Object Id -eq 'codex').State | Should -Be 'Verified'
+                $second.ExitCode | Should -Be 60
+            }
+
+            It 'T1-9: the installer download and executed hashes are copied onto the component result' {
+                $script:t19Sha = 'a' * 64
+                $script:t19Exec = 'b' * 64
+                Mock Install-Component { [pscustomobject]@{ Process=[pscustomobject]@{ ExitCode=0; StdErr=''; StdOut=''; CommandSummary='install'; InstallerDownloadSha256=$script:t19Sha; InstallerExecutedSha256=$script:t19Exec; InstallerFinalHost='releases.openai.com'; InstallerBytes=14 }; StableCode=0; RestartRequired=$false } }
+                $result = Invoke-LlmCliInstaller -Components codex -NonInteractive -LogRoot $script:logs -NoSupportBundle
+                $codex = $result.Components | Where-Object Id -eq 'codex'
+                $codex.InstallerDownloadSha256 | Should -Be $script:t19Sha
+                $codex.InstallerExecutedSha256 | Should -Be $script:t19Exec
+            }
+
+            It 'T2-3: E_INTERNAL_STATE is an invariant violation and still escapes the run' {
+                Mock Install-Component { throw 'E_INTERNAL_STATE: x' }
+                { Invoke-LlmCliInstaller -Components codex -NonInteractive -LogRoot $script:logs -NoSupportBundle } | Should -Throw '*E_INTERNAL_STATE*'
+            }
+
+            It 'T2-4: a 20,000 character stderr is truncated to its tail in the recorded message' {
+                Mock Install-Component { [pscustomobject]@{ Process=[pscustomobject]@{ ExitCode=1; StdErr=('x' * 20000); StdOut=''; CommandSummary='install' }; StableCode=40; RestartRequired=$false } }
+                $result = Invoke-LlmCliInstaller -Components codex -NonInteractive -LogRoot $script:logs -NoSupportBundle
+                $codex = $result.Components | Where-Object Id -eq 'codex'
+                $codex.Message.Length | Should -BeLessOrEqual 4100
+                $codex.Message | Should -BeLike '[[]TRUNCATED]*'
             }
         }
 
@@ -385,7 +449,7 @@ Describe 'v2 migration orchestration with fake package managers' -Tag Integratio
             $claude.PrimaryCode | Should -Be 40
             $claude.State | Should -Be 'UnattemptedBlocked'
             Should -Invoke Install-Component -Times 0 -Exactly -ParameterFilter { $Id -eq 'claude' }
-            $result.ExitCode | Should -Be 60
+            $result.ExitCode | Should -Be 21
         }
 
         It 'interactive B plus the exact token migrates; A keeps; a near-miss token keeps' {
@@ -404,14 +468,17 @@ Describe 'v2 migration orchestration with fake package managers' -Tag Integratio
             Should -Invoke Invoke-NpmUninstall -Times 1 -Exactly
         }
 
-        It 'leaves config, auth and session fixture files byte- and mtime-identical after a migrate run' {
+        It 'leaves config, auth and session fixture files byte- and mtime-identical after a migrate run (remover 호출 범위와 삭제 호출 0건)' {
             $profileRoot = Join-Path $TestDrive 'profile/.grok'
             [IO.Directory]::CreateDirectory((Join-Path $profileRoot 'sessions')) | Out-Null
             $files = @((Join-Path $profileRoot 'config.json'), (Join-Path $profileRoot 'auth.json'), (Join-Path $profileRoot 'sessions/s1.jsonl'))
             foreach ($file in $files) { [IO.File]::WriteAllText($file, ('fixture-' + [IO.Path]::GetFileName($file))) }
             $before = @($files | ForEach-Object { '{0}|{1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash, (Get-Item -LiteralPath $_).LastWriteTimeUtc.Ticks })
+            Mock Remove-Item { }
             $result = Invoke-LlmCliInstaller -Components grok -NonInteractive -ExistingInstallPolicy Migrate -ConfirmMigration -MigrationComponents grok -LogRoot $script:logs -NoSupportBundle
             ($result.Components | Where-Object Id -eq 'grok').MigrationState | Should -Be 'Committed'
+            Should -Invoke Remove-Item -Times 0 -Exactly
+            Should -Invoke Invoke-NpmUninstall -Times 1 -Exactly -ParameterFilter { $Package -eq '@xai-official/grok' -and $Prefix -notmatch '\.grok' }
             $after = @($files | ForEach-Object { '{0}|{1}' -f (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash, (Get-Item -LiteralPath $_).LastWriteTimeUtc.Ticks })
             $after | Should -Be $before
         }

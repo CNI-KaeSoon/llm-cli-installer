@@ -8,17 +8,27 @@
 function Get-RunExitCode {
     # §14.3: 65 aborts the run first; incomplete-journal codes 68 > 67 > 66 outrank 60;
     # otherwise v1 logic, with migration block codes 64, 62, 61, 63 after 50.
-    param([object[]]$Components, [int]$AbortCode = 0, [int[]]$IncompleteCodes = @())
+    param([object[]]$Components, [int]$AbortCode = 0, [int[]]$IncompleteCodes = @(), [string[]]$SelectedIds = @())
     if ($AbortCode -eq 65) { return 65 }
     $failed = @($Components | Where-Object { $_.PrimaryCode -ne 0 })
     $allCodes = @(@($failed | ForEach-Object { [int]$_.PrimaryCode }) + @($IncompleteCodes))
     foreach ($code in @(68, 67, 66)) { if ($allCodes -contains $code) { return $code } }
-    $verified = @($Components | Where-Object { $_.State -in @('Verified', 'VerifiedWithWarning') -and [int]$_.PrimaryCode -eq 0 })
+    $verified = @($Components | Where-Object { $_.State -in @('Verified', 'VerifiedWithWarning') -and [int]$_.PrimaryCode -eq 0 -and (@($SelectedIds).Count -eq 0 -or @($SelectedIds) -contains $_.Id) })
     if ($failed.Count -eq 0) { return 0 }
     if ($verified.Count -gt 0) { return 60 }
     $priority = @(70, 90, 23, 24, 33, 32, 31, 12, 10, 20, 22, 21, 25, 40, 41, 42, 50, 64, 62, 61, 63)
     foreach ($code in $priority) { if ($failed.PrimaryCode -contains $code) { return $code } }
     return [int]$failed[0].PrimaryCode
+}
+
+function Get-ExceptionStableCode {
+    # Maps an exception message prefix to a stable code. -1 means an invariant violation that must abort the run.
+    param([string]$Message)
+    if ($Message -match '^E_NETWORK') { return 20 }
+    if ($Message -match '^E_INTEGRITY') { return 23 }
+    if ($Message -match '^E_NO_TRUSTED') { return 22 }
+    if ($Message -match '^E_INTERNAL_STATE') { return -1 }
+    return 40
 }
 
 function Resolve-ExistingInstallPolicy {
@@ -61,7 +71,7 @@ function Complete-RunSummary {
         try { Save-SanitizedJournalCopy -JournalPath $JournalPath -RunDirectory $Context.RunDirectory | Out-Null } catch { Write-RunEvent $Context 'journal' 'warning' $null $_.Exception.Message 0 $null }
     }
     $incompleteCodes = @($Context.RecoveryResults | ForEach-Object { [int]$_.StableCode } | Where-Object { $_ -ne 0 })
-    $exitCode = Get-RunExitCode -Components @($Context.Components) -AbortCode $Context.AbortCode -IncompleteCodes $incompleteCodes
+    $exitCode = Get-RunExitCode -Components @($Context.Components) -AbortCode $Context.AbortCode -IncompleteCodes $incompleteCodes -SelectedIds $Selected
     if ($exitCode -eq 0 -and @($Context.Components | Where-Object { $_.RestartRequired }).Count -gt 0) { $exitCode = 42 }
     $terminal = if ($exitCode -eq 0) { 'Succeeded' } elseif ($exitCode -eq 42) { 'SucceededWithRestartRequired' } elseif ($exitCode -eq 60) { 'PartiallySucceeded' } else { 'Failed' }
     $summary = [pscustomobject]@{ RunId=$Context.RunId; State=$terminal; ExitCode=$exitCode; SelectedComponents=$Selected; Components=@($Context.Components); LogDirectory=$Context.RunDirectory; SupportBundle=$null; WhatIf=$false; Migration=@($Context.MigrationResults); Recovery=@($Context.RecoveryResults); MigrationPreview=$(if ($Preview) { @($Preview.Rows) } else { @() }) }
@@ -196,11 +206,9 @@ function Invoke-LlmCliInstaller {
         $interactiveMigrate = $false
         if (-not $NonInteractive -and -not $WhatIfPreference -and $migration.Policy -eq 'Keep' -and -not $recoveryBlocked) {
             $offer = @($ordered | Where-Object { $migrationPlans[$_].Canonicality -eq 'NonCanonical' -and [string]$catalog[$_].MigrationSupport -ne 'KeepOnly' })
-            if ($offer.Count -gt 0 -and (Read-MigrationChoice) -eq 'Migrate') {
-                if (-not $script:MigrationGateOpen) {
-                    Write-RunEvent $context 'migrate' 'gate-closed' $null $script:MigrationGateClosedMessage 2 $null
-                    throw ('E_INVALID_ARGUMENT: ' + $script:MigrationGateClosedMessage)
-                }
+            if (-not $script:MigrationGateOpen -and $offer.Count -gt 0) {
+                Write-RunEvent $context 'migrate' 'offer-skipped' $null $script:MigrationGateClosedMessage 0 $null
+            } elseif ($offer.Count -gt 0 -and (Read-MigrationChoice) -eq 'Migrate') {
                 foreach ($id in $offer) { $migrationPlans[$id] = Get-MigrationDecision -ComponentId $id -Inventory $inventories[$id] -Definition $catalog[$id] -Policy 'Migrate' }
                 $interactiveMigrate = $true
             }
@@ -261,36 +269,51 @@ function Invoke-LlmCliInstaller {
                 if ($outcome.StableCode -eq 65) { $context.AbortCode = 65; break }
                 continue
             }
-            if ($result.State -eq 'Skipped') {
-                Move-ComponentState $result 'Verifying' | Out-Null
-            } else {
-                Move-ComponentState $result 'Installing' | Out-Null
-                Write-RunEvent $context 'install' 'started' $id '공식 설치 채널을 실행합니다.' 0 @{ channel=$definition.Install }
-                $install = Install-Component -Id $id -Definition $definition -Context $context -NonInteractive:$NonInteractive
-                $result.RawExitCode = $install.Process.ExitCode
-                $result.RestartRequired = [bool]$install.RestartRequired
-                $result.CommandSummary = $install.Process.CommandSummary
-                if ($install.StableCode -ne 0 -and -not $install.RestartRequired) {
-                    Move-ComponentState $result 'InstallFailed' | Out-Null
-                    Set-ComponentFailure $result $install.StableCode (($install.Process.StdErr, $install.Process.StdOut) -join ' ') $install.Process.ExitCode | Out-Null
-                    Write-RunEvent $context 'install' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode; commandSummary=$result.CommandSummary }
-                    continue
+            try {
+                if ($result.State -eq 'Skipped') {
+                    Move-ComponentState $result 'Verifying' | Out-Null
+                } else {
+                    Move-ComponentState $result 'Installing' | Out-Null
+                    Write-RunEvent $context 'install' 'started' $id '공식 설치 채널을 실행합니다.' 0 @{ channel=$definition.Install }
+                    $install = Install-Component -Id $id -Definition $definition -Context $context -NonInteractive:$NonInteractive
+                    $result.RawExitCode = $install.Process.ExitCode
+                    $result.RestartRequired = [bool]$install.RestartRequired
+                    $result.CommandSummary = $install.Process.CommandSummary
+                    if ($install.Process.PSObject.Properties['InstallerExecutedSha256']) {
+                        $result.InstallerDownloadSha256 = $install.Process.InstallerDownloadSha256
+                        $result.InstallerExecutedSha256 = $install.Process.InstallerExecutedSha256
+                    }
+                    if ($install.StableCode -ne 0 -and -not $install.RestartRequired) {
+                        Move-ComponentState $result 'InstallFailed' | Out-Null
+                        Set-ComponentFailure $result $install.StableCode (Get-OutputTail -Text (($install.Process.StdErr, $install.Process.StdOut) -join ' ') -MaxLength 4000) $install.Process.ExitCode | Out-Null
+                        Write-RunEvent $context 'install' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode; commandSummary=$result.CommandSummary }
+                        continue
+                    }
+                    if ($install.RestartRequired) { Move-ComponentState $result 'RestartRequired' | Out-Null }
+                    else { Move-ComponentState $result 'Installed' | Out-Null }
+                    Update-ProcessPath | Out-Null
+                    Move-ComponentState $result 'Verifying' | Out-Null
                 }
-                if ($install.RestartRequired) { Move-ComponentState $result 'RestartRequired' | Out-Null }
-                else { Move-ComponentState $result 'Installed' | Out-Null }
-                Update-ProcessPath | Out-Null
-                Move-ComponentState $result 'Verifying' | Out-Null
-            }
-            $verification = Test-ComponentInstallation -Id $id -Definition $definition
-            if ($verification.Success) {
-                Move-ComponentState $result $verification.Status | Out-Null
-                $result.Version = $verification.Version
-                $result.ResolvedPath = $verification.Process.ResolvedPath
-                Write-RunEvent $context 'verify' 'completed' $id ("버전 {0} 검증 성공" -f $result.Version) 0 @{ resolvedPath=$result.ResolvedPath }
-            } else {
-                Move-ComponentState $result 'VerificationFailed' | Out-Null
-                Set-ComponentFailure $result $verification.Code '새 프로세스 버전 검증에 실패했습니다.' $verification.Process.ExitCode | Out-Null
-                Write-RunEvent $context 'verify' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode }
+                $verification = Test-ComponentInstallation -Id $id -Definition $definition
+                if ($verification.Success) {
+                    Move-ComponentState $result $verification.Status | Out-Null
+                    $result.Version = $verification.Version
+                    $result.ResolvedPath = $verification.Process.ResolvedPath
+                    Write-RunEvent $context 'verify' 'completed' $id ("버전 {0} 검증 성공" -f $result.Version) 0 @{ resolvedPath=$result.ResolvedPath }
+                } else {
+                    Move-ComponentState $result 'VerificationFailed' | Out-Null
+                    Set-ComponentFailure $result $verification.Code '새 프로세스 버전 검증에 실패했습니다.' $verification.Process.ExitCode | Out-Null
+                    Write-RunEvent $context 'verify' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode }
+                }
+            } catch {
+                $failure = $_.Exception.Message
+                $failureCode = Get-ExceptionStableCode -Message $failure
+                if ($failureCode -eq -1) { throw }
+                if ($result.State -eq 'Installing') { Move-ComponentState $result 'InstallFailed' | Out-Null }
+                elseif ($result.State -eq 'Verifying') { Move-ComponentState $result 'VerificationFailed' | Out-Null }
+                Set-ComponentFailure $result $failureCode ('설치/검증 중 예외: ' + $failure) | Out-Null
+                Write-RunEvent $context 'install' 'exception' $id $result.Message $failureCode $null
+                continue
             }
         }
         Move-RunState $context 'RefreshingEnvironment' | Out-Null

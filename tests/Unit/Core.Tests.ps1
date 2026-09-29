@@ -11,6 +11,10 @@ Describe 'LLM CLI Installer core contracts' -Tag Unit {
             $actual | Should -Be @('codex', 'claude', 'antigravity', 'grok')
             $actual | Should -Not -Contain 'legacy-gemini'
         }
+        It 'T5-2: splits comma separated selections passed as one -File argument' {
+            @(Resolve-ComponentSelection -Components @('google,codex')) | Should -Be @('antigravity', 'codex')
+            { Resolve-ComponentSelection -Components @(' , ') } | Should -Throw '*E_INVALID_ARGUMENT*'
+        }
         It 'requires the explicit Legacy Gemini guard' {
             { Resolve-ComponentSelection -Components @('legacy-gemini') } | Should -Throw '*E_INVALID_ARGUMENT*'
             @(Resolve-ComponentSelection -Components @('legacy-gemini') -AllowLegacyGemini) | Should -Be @('legacy-gemini')
@@ -59,6 +63,9 @@ Describe 'Redaction leak cases' -Tag Unit {
         $leakM2 = 'QB' * 8
         $kw = @('API', 'KEY') -join $us
         $header = @('Author', 'ization') -join ''
+        $pwKey = @('pass', 'word') -join ''
+        $pemBegin = '-----BEGIN ' + 'RSA ' + 'PRIVATE ' + 'KEY-----'
+        $pemEnd = '-----END ' + 'RSA ' + 'PRIVATE ' + 'KEY-----'
         $scheme = @('Bea', 'rer') -join ''
         $jwtHead = @('ey', 'J', 'hbGci', 'OiJIUzI1NiJ9') -join ''
         $script:leakCases = @(
@@ -74,7 +81,17 @@ Describe 'Redaction leak cases' -Tag Unit {
             @{ Name = 'user path with space'; Text = 'C:\Users\John Smith\AppData\Roaming\npm'; Marker = 'Smith' },
             @{ Name = 'forward-slash user path'; Text = 'C:/Users/alice/AppData'; Marker = 'alice' },
             @{ Name = 'D-drive user path'; Text = 'D:\Users\alice\AppData'; Marker = 'alice' },
-            @{ Name = 'JSON-escaped user path'; Text = '{"p":"C:\\Users\\alice\\AppData"}'; Marker = 'alice' }
+            @{ Name = 'JSON-escaped user path'; Text = '{"p":"C:\\Users\\alice\\AppData"}'; Marker = 'alice' },
+            @{ Name = 'T3-1 single-quoted password value'; Text = ($pwKey + "='" + $leakM1 + "'"); Marker = $leakM1 },
+            @{ Name = 'T3-2 PowerShell env assignment'; Text = ('$' + 'env:' + 'GEMINI' + $us + $kw + " = '" + $leakM1 + "'"); Marker = $leakM1 },
+            @{ Name = 'T3-3 JSON value with spaces'; Text = ('{"' + $pwKey + '": "my ' + $leakM1 + ' pass"}'); Marker = $leakM1 },
+            @{ Name = 'T3-4a complete PEM block'; Text = ($pemBegin + "`n" + $leakM1 + "`n" + $pemEnd); Marker = $leakM1 },
+            @{ Name = 'T3-4b truncated PEM block'; Text = ($pemBegin + "`n" + $leakM1 + "`nmore"); Marker = $leakM1 },
+            @{ Name = 'T3-5 npmrc auth key'; Text = (('_au' + 'th') + '=' + $leakM1); Marker = $leakM1 },
+            @{ Name = 'T3-6a api-key flag with space'; Text = ('tool --api' + $hy + 'key ' + $leakM1); Marker = $leakM1 },
+            @{ Name = 'T3-6b token flag with space'; Text = ('tool --tok' + 'en ' + $leakM1); Marker = $leakM1 },
+            @{ Name = 'T3-7 Google API key shape'; Text = ('key ' + 'AI' + 'za' + ('Q' * 35)); Marker = ('Q' * 35) },
+            @{ Name = 'T3-8 npm token shape'; Text = ('x ' + 'np' + 'm_' + ('R' * 36)); Marker = ('R' * 36) }
         )
         $script:leakStdErr = ('npm ERR! OPENAI' + $us + $kw + '=' + (@('sk', 'proj') -join $hy) + $hy + $leakM1 + ' and ' + $header + ': ' + $scheme + ' ' + $leakM2 + ' in C:\Users\fixture\.npmrc')
     }
@@ -87,6 +104,25 @@ Describe 'Redaction leak cases' -Tag Unit {
             }
             # Package names that merely share a vendor prefix stay readable.
             Protect-SensitiveText -Text 'npm install -g @xai-official/grok@1.2.3' | Should -Be 'npm install -g @xai-official/grok@1.2.3'
+        }
+    }
+
+    It 'T3-9: the current USERNAME is masked as a whole word' {
+        InModuleScope LLMCliInstaller {
+            $original = $env:USERNAME
+            try {
+                $env:USERNAME = 'fixtureuser'
+                Protect-SensitiveText -Text 'owner fixtureuser done' | Should -Not -Match 'fixtureuser'
+            } finally { $env:USERNAME = $original }
+        }
+    }
+
+    It 'T3-10: ordinary text, registry flags and PATH lists are not over-masked' {
+        InModuleScope LLMCliInstaller {
+            Protect-SensitiveText -Text 'author: Jane' | Should -Be 'author: Jane'
+            $registry = 'npm install --registry=https://registry.npmjs.org/ @xai-official/grok'
+            Protect-SensitiveText -Text $registry | Should -Be $registry
+            Protect-SensitiveText -Text 'C:\Users\bob;C:\Windows' | Should -Match ([regex]::Escape('C:\Windows'))
         }
     }
 
@@ -148,6 +184,25 @@ Describe 'Redaction leak cases' -Tag Unit {
                 $persisted | Should -Not -Match $M2
                 $persisted | Should -Not -Match 'fixture'
             }
+        }
+    }
+}
+
+Describe 'Process pipe handling' -Tag Unit {
+    It 'T4-1: a timed out child that leaves a grandchild holding the pipe returns within 9 seconds' -Skip:($env:OS -eq 'Windows_NT') {
+        InModuleScope LLMCliInstaller {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $result = Invoke-SafeProcess -FilePath sh -ArgumentList @('-c', 'sleep 12 & wait') -TimeoutSeconds 2 -CloseInput
+            $watch.Stop()
+            $result.TimedOut | Should -BeTrue
+            $watch.Elapsed.TotalSeconds | Should -BeLessThan 9
+        }
+    }
+    It 'T4-2: a normally exiting child returns its output' -Skip:($env:OS -eq 'Windows_NT') {
+        InModuleScope LLMCliInstaller {
+            $result = Invoke-SafeProcess -FilePath sh -ArgumentList @('-c', 'echo ok') -TimeoutSeconds 10 -CloseInput
+            $result.TimedOut | Should -BeFalse
+            $result.StdOut | Should -BeLike 'ok*'
         }
     }
 }

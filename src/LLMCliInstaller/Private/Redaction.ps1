@@ -2,21 +2,38 @@
     param([AllowNull()][AllowEmptyString()][string]$Text)
     if ($null -eq $Text) { return $null }
     $safe = [string]$Text
+    # 0) PEM private key blocks (complete first, then a truncated block without END), before anything else can split them.
+    $safe = [regex]::Replace($safe, '(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----', '[REDACTED:pem]')
+    $safe = [regex]::Replace($safe, '(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*$', '[REDACTED:pem]')
     # 1) Authorization schemes first, so the credential itself (not only the scheme word) is masked.
     $safe = [regex]::Replace($safe, '(?i)\b(Bearer|Basic)\s+(?!\[REDACTED)[A-Za-z0-9._~+/=-]+', '$1 [REDACTED:auth]')
     # 2) JWTs: three base64url segments starting with eyJ.
     $safe = [regex]::Replace($safe, '\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*', '[REDACTED:jwt]')
-    # 3) Vendor key prefixes with hyphen or underscore separators (OpenAI/Anthropic sk-, xAI, GitHub PAT/OAuth).
+    # 3) Vendor key prefixes with hyphen or underscore separators (OpenAI/Anthropic sk-, xAI, GitHub PAT/OAuth), Google API keys and npm tokens.
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9])(?:sk|xai|ghp|gho|ghu|ghs|ghr|github_pat)[-_][A-Za-z0-9_-]{20,}', '[REDACTED:token]')
+    $safe = [regex]::Replace($safe, '(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])', '[REDACTED:token]')
+    $safe = [regex]::Replace($safe, '(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])', '[REDACTED:token]')
     # 4) key=value, key: value and JSON "key": "value"; the key may carry a prefix such as VENDOR_API_KEY.
-    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|token|password|passwd|secret|cookie|authorization|credential)s?)(\\?"?\s*[:=]\s*\\?"?)(?!\[REDACTED)([^\s"'',;&\\]+)', '$1$2[REDACTED:key]')
+    $keyNames = '(?:api[_-]?key|access[_-]?key|token|password|passwd|secret|cookie|authorization|credential|auth)s?'
+    # 4a) quoted values (single or double, optionally JSON-escaped): everything up to the closing quote, spaces included.
+    $safe = [regex]::Replace($safe, ('(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?' + $keyNames + ')(\\?["'']?\s*[:=]\s*)(\\?)(["''])(?!\[REDACTED)(.*?)\3\4'), '$1$2$3$4[REDACTED:key]$3$4')
+    # 4b) unquoted values.
+    $safe = [regex]::Replace($safe, ('(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?' + $keyNames + ')(\\?["'']?\s*[:=]\s*\\?"?)(?!\[REDACTED)([^\s"'',;&\\]+)'), '$1$2[REDACTED:key]')
+    # 4c) space-separated command-line flag values such as --api-key <value>.
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9-])(--?(?:api[_-]?key|access[_-]?key|token|auth[_-]?token|password|secret))(\s+)(?!\[REDACTED)(?!-)([^\s"'']+)', '$1$2[REDACTED:key]')
+    # 5) URL userinfo and query secrets.
     $safe = [regex]::Replace($safe, '(https?://)[^/@\s]+@', '$1[REDACTED:userinfo]@')
     $safe = [regex]::Replace($safe, '(?i)([?&](?:token|key|password|secret)=)[^&#\s]+', '$1[REDACTED:url]')
-    # 5) Windows profile paths on any drive, with \ or / or JSON-escaped \\ separators; names may contain spaces.
-    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z])[a-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)[^\\/"\r\n]+', '%USERPROFILE%')
+    # 6) Windows profile paths on any drive, with \ or / or JSON-escaped \\ separators; names may contain spaces.
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z])[a-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)[^\\/"''\r\n;|<>]+', '%USERPROFILE%')
+    # 7) Exact profile path from the environment.
     if ($env:USERPROFILE) {
         $safe = $safe.Replace($env:USERPROFILE, '%USERPROFILE%')
         $safe = $safe.Replace($env:USERPROFILE.Replace('\', '\\'), '%USERPROFILE%')
+    }
+    # 8) The account name itself, as a whole word.
+    if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
+        $safe = [regex]::Replace($safe, ('(?i)(?<![A-Za-z0-9])' + [regex]::Escape($env:USERNAME) + '(?![A-Za-z0-9])'), '<USER>')
     }
     return $safe
 }

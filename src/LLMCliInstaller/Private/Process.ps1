@@ -1,4 +1,15 @@
-﻿function Join-CommandSummary {
+﻿# Characters that cmd.exe would interpret when a .cmd/.bat shim is started: control characters and " % ! ^ & | < >.
+$script:CmdUnsafePattern = '[\x00-\x1F"%!^&|<>]'
+
+function Get-OutputTail {
+    # Keeps only the last MaxLength characters of process output so one failure cannot flood logs and summaries.
+    param([AllowNull()][AllowEmptyString()][string]$Text, [int]$MaxLength = 4000)
+    $value = [string]$Text
+    if ($value.Length -le $MaxLength) { return $value }
+    return ('[TRUNCATED] ' + $value.Substring($value.Length - $MaxLength))
+}
+
+function Join-CommandSummary {
     # -NoMask builds the runnable form for console display only; logs, journal and summary keep the masked form.
     param([string]$FilePath, [string[]]$ArgumentList, [switch]$NoMask)
     $parts = @($FilePath) + @($ArgumentList | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } })
@@ -28,6 +39,12 @@ function Invoke-SafeProcess {
     if (-not $resolved) {
         return [pscustomobject]@{ ExitCode = 127; TimedOut = $false; StdOut = ''; StdErr = 'command not found'; ResolvedPath = $null; CommandSummary = (Join-CommandSummary $FilePath $ArgumentList) }
     }
+    if ([IO.Path]::GetExtension([string]$resolved.Source) -match '^(?i)\.(cmd|bat)$') {
+        $unsafeArguments = @($ArgumentList | Where-Object { [string]$_ -match $script:CmdUnsafePattern })
+        if ($unsafeArguments.Count -gt 0) {
+            return [pscustomobject]@{ ExitCode = 126; TimedOut = $false; StdOut = ''; StdErr = 'E_UNSAFE_ARGUMENT: cmd shim argument contains a metacharacter'; ResolvedPath = $resolved.Source; CommandSummary = (Join-CommandSummary $FilePath $ArgumentList) }
+        }
+    }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $resolved.Source
     $info.UseShellExecute = $false
@@ -50,13 +67,20 @@ function Invoke-SafeProcess {
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         # Only the process this product started is terminated; never an unrelated user process.
         try { $process.Kill() } catch { $null = $_ }
-        return [pscustomobject]@{ ExitCode = 124; TimedOut = $true; StdOut = Protect-SensitiveText $stdoutTask.Result; StdErr = 'timeout'; ResolvedPath = $resolved.Source; CommandSummary = (Join-CommandSummary $FilePath $ArgumentList) }
+        # A grandchild may still hold the pipe open, so stdout is awaited for a bounded time only and stderr is not awaited.
+        try { [void]$stdoutTask.Wait(5000) } catch { $null = $_ }
+        $timedOutStdOut = $(if ($stdoutTask.IsCompleted -and -not $stdoutTask.IsFaulted) { Protect-SensitiveText $stdoutTask.Result } else { '' })
+        return [pscustomobject]@{ ExitCode = 124; TimedOut = $true; StdOut = $timedOutStdOut; StdErr = 'timeout'; ResolvedPath = $resolved.Source; CommandSummary = (Join-CommandSummary $FilePath $ArgumentList) }
     }
+    try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 10000) } catch { $null = $_ }
+    $incomplete = '[OUTPUT_INCOMPLETE: child process still holds the pipe]'
+    $normalStdOut = $(if ($stdoutTask.IsCompleted -and -not $stdoutTask.IsFaulted) { Protect-SensitiveText -Text $stdoutTask.Result } else { $incomplete })
+    $normalStdErr = $(if ($stderrTask.IsCompleted -and -not $stderrTask.IsFaulted) { Protect-SensitiveText -Text $stderrTask.Result } else { $incomplete })
     [pscustomobject]@{
         ExitCode = $process.ExitCode
         TimedOut = $false
-        StdOut = Protect-SensitiveText -Text $stdoutTask.Result
-        StdErr = Protect-SensitiveText -Text $stderrTask.Result
+        StdOut = $normalStdOut
+        StdErr = $normalStdErr
         ResolvedPath = $resolved.Source
         CommandSummary = (Join-CommandSummary $FilePath $ArgumentList)
     }

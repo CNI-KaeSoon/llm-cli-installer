@@ -9,7 +9,9 @@ function Resolve-ComponentSelection {
     $aliases = @{ google='antigravity'; gemini='antigravity' }
     $allowed = @('codex', 'claude', 'antigravity', 'grok', 'legacy-gemini')
     $selected = New-Object System.Collections.ArrayList
-    foreach ($component in $Components) {
+    $expanded = @($Components | ForEach-Object { ([string]$_).Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($expanded.Count -eq 0) { throw 'E_INVALID_ARGUMENT: 구성요소를 선택해야 합니다.' }
+    foreach ($component in $expanded) {
         $id = ([string]$component).Trim().ToLowerInvariant()
         if ($id -eq 'all') {
             foreach ($default in @('codex', 'claude', 'antigravity', 'grok')) { if ($selected -notcontains $default) { [void]$selected.Add($default) } }
@@ -61,8 +63,17 @@ $script:SignerSubjectAllowlist = @{
     git = @('Johannes Schindelin')
     node = @('OpenJS Foundation')
     codex = @('OpenAI')
-    claude = @('Anthropic')
+    claude = @('Anthropic', 'Anthropic, PBC')
     antigravity = @('Google LLC')
+}
+
+function Get-CertificateOrganization {
+    # First O= value of a certificate subject; quoted RDN values ("A, B") are parsed and "" is unescaped.
+    param([string]$Subject)
+    $match = [regex]::Match([string]$Subject, '(?:^|,\s*)O=(?:"((?:[^"]|"")*)"|([^,]*))')
+    if (-not $match.Success) { return $null }
+    if ($match.Groups[1].Success) { return ($match.Groups[1].Value -replace '""', '"').Trim() }
+    return $match.Groups[2].Value.Trim()
 }
 
 function Resolve-CanonicalRoot {
@@ -232,7 +243,8 @@ function Get-ComponentInventory {
             try {
                 $signature = Get-AuthenticodeSignature -FilePath $path -ErrorAction Stop
                 $subject = $(if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { '' })
-                $signed = ($signature.Status -eq 'Valid' -and @($script:SignerSubjectAllowlist[$Id] | Where-Object { $subject -match ('O=' + [regex]::Escape($_)) }).Count -gt 0)
+                $organization = Get-CertificateOrganization -Subject $subject
+                $signed = ($signature.Status -eq 'Valid' -and $null -ne $organization -and @($script:SignerSubjectAllowlist[$Id] | Where-Object { $_ -ieq $organization }).Count -gt 0)
             } catch { $signed = $false }
             [void]$evidence.Add((New-ProvenanceEvidence -Kind 'SignerAllowlist' -Source 'authenticode' -Matched $signed -Detail 'signer subject allowlist'))
             [void]$evidence.Add((New-ProvenanceEvidence -Kind 'OfficialMarker' -Source 'canonical-root' -Matched ($signed -and $isCanonical) -Detail 'signed binary in documented layout'))

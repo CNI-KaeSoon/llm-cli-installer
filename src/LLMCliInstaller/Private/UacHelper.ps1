@@ -1,5 +1,6 @@
 ﻿# Elevation is used for install only. Migration (uninstall/reinstall) never elevates (V2_MIGRATION_PLAN §14.6).
 $script:ElevatedOperationAllowlist = @('winget-install')
+$script:ElevationChannelEnabled = $false
 
 function Test-ElevatedOperationAllowed {
     param([string]$Operation)
@@ -9,6 +10,7 @@ function Test-ElevatedOperationAllowed {
 
 function Invoke-ValidatedElevatedOperation {
     param([string]$Operation, [hashtable]$Arguments, [int]$TimeoutSeconds = 900)
+    if (-not $script:ElevationChannelEnabled) { throw 'E_ELEVATION_CHANNEL: elevation helper is disabled in this release (see SECURITY.md)' }
     if (-not (Test-ElevatedOperationAllowed -Operation $Operation)) { throw 'E_ELEVATION_CHANNEL: operation not allowed' }
     $staging = Join-Path ([IO.Path]::GetTempPath()) ('llm-cli-uac-' + [guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($staging) | Out-Null

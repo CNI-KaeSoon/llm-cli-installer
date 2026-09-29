@@ -31,6 +31,8 @@ function New-ComponentResult {
         ResolvedPath = $null
         CommandSummary = $null
         RestartRequired = $false
+        InstallerDownloadSha256 = $null
+        InstallerExecutedSha256 = $null
         MigrationState = 'InventoryUnknown'
         Decision = $null
         ProvenanceGrade = $null

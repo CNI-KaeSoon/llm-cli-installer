@@ -314,5 +314,26 @@ Describe 'v2 migration contracts' -Tag Unit {
                 foreach ($pattern in $patterns) { $text | Should -Not -Match $pattern -Because $file.Name }
             }
         }
+
+        It 'T7-1: the elevation helper is hard-disabled and never starts a process' {
+            Mock Start-Process { }
+            { Invoke-ValidatedElevatedOperation -Operation 'winget-install' -Arguments @{} } | Should -Throw '*disabled*'
+            Should -Invoke Start-Process -Times 0 -Exactly
+        }
+
+        It 'T6-1: Get-CertificateOrganization parses quoted and plain O values exactly' {
+            Get-CertificateOrganization -Subject 'CN=x, O="Anthropic, PBC", C=US' | Should -Be 'Anthropic, PBC'
+            $fake = Get-CertificateOrganization -Subject 'CN=a, O=Google LLC Holdings Fake, C=US'
+            $fake | Should -Be 'Google LLC Holdings Fake'
+            @($script:SignerSubjectAllowlist['antigravity']) | Should -Not -Contain $fake
+            Get-CertificateOrganization -Subject 'CN=a' | Should -BeNullOrEmpty
+        }
+
+        It 'T5-1: exit code judges only the selected components when SelectedIds is given' {
+            $make = { param([string]$Id, [string]$State, [int]$Code) $r = New-ComponentResult -Id $Id; $r.State = $State; $r.PrimaryCode = $Code; $r }
+            $components = @((& $make 'powershell' 'Verified' 0), (& $make 'python' 'Verified' 0), (& $make 'codex' 'InstallFailed' 40))
+            Get-RunExitCode -Components $components -SelectedIds @('codex') | Should -Be 40
+            Get-RunExitCode -Components $components | Should -Be 60
+        }
     }
 }

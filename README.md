@@ -1,10 +1,25 @@
-# Windows LLM CLI Installer v2.0.0
+# Windows LLM CLI Installer v2.0.1
 
 Windows 11 x64에서 PowerShell 7, Git, Node.js LTS, Python 3.12+와 Codex CLI, Claude Code, Antigravity CLI, Grok CLI를 공식 배포처를 통해 설치하고 새 프로세스에서 버전을 검증합니다. v2는 비표준 위치의 기존 설치를 **유지(기본)**하거나, 사용자가 명시적으로 선택한 경우 소유권이 증명된 항목만 공식 제거기로 제거한 뒤 정본 위치에 재설치(**이전**)합니다.
 
 Google 계정의 기본 도구는 **Antigravity CLI**입니다. `all`, `google`, `gemini` 선택은 Antigravity를 설치하며 Legacy Gemini CLI를 설치하지 않습니다. Legacy Gemini는 지원되는 Enterprise/Google Cloud/유료 API 키 사용자가 고급 옵션으로 직접 선택할 때만 설치합니다.
 
 ## 빠른 시작
+
+### 내려받은 ZIP 확인(권장)
+
+GitHub Release에서 `llm-cli-installer-v2.0.1.zip`과 `llm-cli-installer-v2.0.1.zip.sha256`을 함께 내려받고, 압축을 풀기 전에 두 값이 같은지 확인합니다.
+
+```powershell
+(Get-FileHash .\llm-cli-installer-v2.0.1.zip -Algorithm SHA256).Hash.ToLower()
+Get-Content .\llm-cli-installer-v2.0.1.zip.sha256
+```
+
+이 비교는 내려받는 중 파일이 손상됐는지만 확인합니다. ZIP과 `.sha256`은 같은 GitHub Release에서 받으므로 배포 채널이 변조되면 둘이 함께 바뀔 수 있고, 따라서 누가 만든 파일인지(진위)는 증명하지 않습니다. 자세한 한계는 [SECURITY.md](SECURITY.md)의 "릴리스 무결성"을 참고하세요.
+
+`install.ps1`은 실행 전에 `manifest.sha256`의 모든 파일 hash와 추가 실행 파일 여부를 검사하며, 하나라도 다르면 종료 코드 23으로 멈춥니다.
+
+### 실행
 
 ZIP을 내려받아 압축을 푼 디렉터리에서 Windows PowerShell 5.1을 열고 실행합니다.
 
@@ -30,7 +45,7 @@ GitHub 원격 한 줄 부트스트랩은 저장소 소유자, 릴리스 URL과 �
 
 ## 기존 설치: 유지(A) 또는 이전(B)
 
-> 현재 배포본에서는 Windows 11 실기기 검증 전까지 이전(B)이 비활성화되어 있습니다(release gate). `-ExistingInstallPolicy Migrate`나 대화형 B 선택은 변경 없이 종료 코드 2로 끝나며, `-WhatIf` 미리보기만 가능합니다.
+> 현재 배포본에서는 Windows 11 실기기 검증 전까지 이전(B)이 비활성화되어 있습니다(release gate). `-ExistingInstallPolicy Migrate`는 변경 없이 종료 코드 2로 끝나고, 대화형에서는 이전 선택지를 묻지 않습니다. `-WhatIf` 미리보기만 가능합니다.
 
 - **A 유지(기본)**: 파일, 패키지, PATH, 설정을 바꾸지 않고 발견된 실행 파일만 검증합니다.
 - **B 이전**: 출처 등급 P3(패키지 관리자 소유가 독립적으로 증명됨)인 단일 후보만 공식 제거기로 제거하고 정본 위치에 재설치합니다. 대화형에서는 미리보기 뒤 정확히 `이전`을 입력해야 하며, 비대화형에서는 아래 세 옵션이 모두 필요합니다.
@@ -53,6 +68,8 @@ GitHub 원격 한 줄 부트스트랩은 저장소 소유자, 릴리스 URL과 �
 - 공급자 설치 명령이 성공해도 새 프로세스의 버전 확인이 실패하면 성공으로 처리하지 않습니다.
 - 로그인, API 키, 토큰, 쿠키를 요청하거나 저장하지 않습니다. 설치 후 인증은 각 CLI에서 사용자가 별도로 수행합니다.
 - 실패한 구성요소와 독립적인 다른 구성요소는 계속 처리합니다.
+- 보안 신뢰 경계와 알려진 잔여 위험은 [SECURITY.md](SECURITY.md)를 참고하세요.
+- 알려진 제한: `-AllowUpgrade`는 현재 효과가 없습니다. 하한 미만의 Node.js는 검증 실패로 보고 공식 채널로 설치를 시도합니다.
 
 ## 로그와 지원 번들
 
@@ -67,7 +84,8 @@ Pester 5와 PSScriptAnalyzer가 설치된 PowerShell 7에서:
 ```powershell
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 .\tests\Run-Tests.ps1
-.\tools\Update-Manifest.ps1
+.\tools\Update-Manifest.ps1   # 파일을 고친 뒤 반드시 실행(안 하면 install.ps1이 23으로 멈춤)
+.\tools\New-ReleasePackage.ps1  # 깨끗한 git 작업 트리에서만. ZIP과 .sha256은 app 폴더 밖에 생성
 ```
 
 실제 WinGet, npm, pymanager, UAC, Registry PATH, Python App Installer alias, 공식 설치기는 Windows 11 x64 VM 또는 실기기에서만 검증할 수 있습니다. 현재 상태: mock/static 검증 통과, Windows E2E NOT_RUN. Windows release gate 충족 전 배포본에서 이전 기능은 사용하지 마세요.
