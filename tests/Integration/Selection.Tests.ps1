@@ -186,6 +186,27 @@ Describe 'Release packaging and bootstrap integrity' -Tag Integration {
         }
     }
 
+    It 'T8-8b: an unlisted executable or batch file (e.g. a planted powershell.exe) stops install.ps1 with exit 23' {
+        foreach ($name in @('powershell.exe', 'evil.cmd', 'evil.bat')) {
+            $extra = Join-Path $script:appCopy $name
+            [IO.File]::WriteAllText($extra, 'x')
+            try {
+                $run = Invoke-Child -Script $script:installScript -Arguments @('-Components', 'google', '-NonInteractive', '-WhatIf', '-NoSupportBundle', '-LogRoot', (Join-Path $TestDrive 'l3b'))
+                $run.ExitCode | Should -Be 23 -Because $name
+            } finally {
+                $parking = Join-Path $TestDrive 'parking-exe'
+                [IO.Directory]::CreateDirectory($parking) | Out-Null
+                Move-Item -LiteralPath $extra -Destination (Join-Path $parking $name) -Force
+            }
+        }
+    }
+
+    It 'T8-8c: install.bat starts Windows PowerShell by absolute System32 path, never a bare powershell.exe' {
+        $bat = [IO.File]::ReadAllText((Join-Path $script:realApp 'install.bat'))
+        $bat | Should -Match ([regex]::Escape('set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"'))
+        ($bat -split "`r?`n" | Where-Object { $_ -match '(?i)(^|[\s(])powershell(\.exe)?\s+-' }).Count | Should -Be 0
+    }
+
     It 'T8-9: a code file missing from the manifest stops install.ps1 with exit 23' {
         $manifest = Join-Path $script:appCopy 'manifest.sha256'
         $original = [IO.File]::ReadAllBytes($manifest)

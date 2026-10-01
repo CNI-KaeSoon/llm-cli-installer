@@ -75,10 +75,11 @@ function Invoke-SafeProcess {
     while (-not $exited -and $stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         $exited = $process.WaitForExit(1000)
         if (-not $exited -and $stopwatch.Elapsed.TotalSeconds -ge 3) {
-            Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Status ('경과 {0}분 {1}초' -f [int][Math]::Floor($stopwatch.Elapsed.TotalMinutes), $stopwatch.Elapsed.Seconds)
+            # Progress is cosmetic: a host failure must not skip the timeout/kill handling below.
+            try { Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Status ('경과 {0}분 {1}초' -f [int][Math]::Floor($stopwatch.Elapsed.TotalMinutes), $stopwatch.Elapsed.Seconds) } catch { $null = $_ }
         }
     }
-    Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Completed
+    try { Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Completed } catch { $null = $_ }
     if (-not $exited) {
         # Only the process this product started is terminated; never an unrelated user process.
         try { $process.Kill() } catch { $null = $_ }

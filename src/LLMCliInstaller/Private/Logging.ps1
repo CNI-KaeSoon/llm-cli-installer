@@ -74,7 +74,8 @@ function Write-ConsoleSummary {
     Write-ConsoleStep ' 설치 결과' 'Cyan'
     Write-ConsoleStep '==================================================' 'Cyan'
     if ($Summary.PSObject.Properties['WhatIf'] -and $Summary.WhatIf) {
-        Write-ConsoleStep ' 미리보기만 했습니다. 컴퓨터에는 아무것도 바뀌지 않았습니다.' 'Yellow'
+        Write-ConsoleStep ' 미리보기만 했습니다. 설치 상태는 바뀌지 않았고 진단 기록만 남겼습니다.' 'Yellow'
+        if ($Summary.LogDirectory) { Write-ConsoleStep (' 진단 기록: ' + (Protect-SensitiveText -Text ([string]$Summary.LogDirectory))) 'Gray' }
         return
     }
     foreach ($component in @($Summary.Components)) {
@@ -87,7 +88,12 @@ function Write-ConsoleSummary {
     }
     Write-ConsoleStep ''
     switch ([int]$Summary.ExitCode) {
-        0 { Write-ConsoleStep ' 모두 끝났습니다. 새 터미널 창을 열면 codex, claude, agy, grok 명령을 쓸 수 있습니다.' 'Green' }
+        0 {
+            $commandById = @{ codex='codex'; claude='claude'; antigravity='agy'; grok='grok'; 'legacy-gemini'='gemini' }
+            $ready = @($Summary.Components | Where-Object { $_.State -in @('Verified', 'VerifiedWithWarning') -and $commandById.ContainsKey($_.Id) } | ForEach-Object { $commandById[$_.Id] })
+            if ($ready.Count -gt 0) { Write-ConsoleStep (' 모두 끝났습니다. 새 터미널 창을 열면 {0} 명령을 쓸 수 있습니다.' -f ($ready -join ', ')) 'Green' }
+            else { Write-ConsoleStep ' 모두 끝났습니다.' 'Green' }
+        }
         42 { Write-ConsoleStep ' 설치는 끝났지만 컴퓨터를 다시 시작해야 합니다. 재부팅 후 이 설치기를 한 번 더 실행하세요.' 'Yellow' }
         65 { Write-ConsoleStep ' 다른 설치기가 이미 실행 중입니다. 그 창이 끝난 뒤 다시 실행하세요.' 'Yellow' }
         default { Write-ConsoleStep ' 일부 항목이 실패했습니다. 인터넷 연결을 확인하고 다시 실행해 보세요. 이미 설치된 항목은 건너뜁니다.' 'Red' }

@@ -1,12 +1,18 @@
 @echo off
 rem Double-click launcher: runs install.ps1 with a process-only ExecutionPolicy Bypass.
 rem No arguments installs all components; any arguments are passed to install.ps1 as-is.
+rem PowerShell is started by absolute path so an extra powershell.exe in this folder is never run.
 setlocal
-cd /d "%~dp0"
+set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PS_EXE%" (
+    echo Windows PowerShell 5.1 was not found: %PS_EXE%
+    pause
+    exit /b 90
+)
 if "%~1"=="" (
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -Components all
+    "%PS_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -Components all
 ) else (
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
+    "%PS_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
 )
 set "EXITCODE=%ERRORLEVEL%"
 echo.

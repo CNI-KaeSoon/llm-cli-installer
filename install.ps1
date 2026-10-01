@@ -44,7 +44,7 @@ try {
         foreach ($candidate in Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Force) {
             $relative = $candidate.FullName.Substring($rootFull.Length + 1).Replace('\', '/')
             if ($relative.StartsWith('.git/')) { continue }
-            if (@('.ps1', '.psm1', '.psd1') -notcontains $candidate.Extension.ToLowerInvariant()) { continue }
+            if (@('.ps1', '.psm1', '.psd1', '.bat', '.cmd', '.exe', '.com', '.msi', '.dll', '.vbs', '.js', '.wsf', '.lnk') -notcontains $candidate.Extension.ToLowerInvariant()) { continue }
             if (-not $manifestEntries.ContainsKey($relative)) { $integrityFailure = ('manifest에 없는 실행 파일 ' + $relative); break }
         }
     }
@@ -67,7 +67,7 @@ try {
     if ($WhatIfPreference) { $arguments.WhatIf = $true }
     $result = Invoke-LlmCliInstaller @arguments
     # Plain-language result for the console; the full masked JSON stays in summary.json in the log folder.
-    & $module { param($value) Write-ConsoleSummary -Summary $value } $result
+    try { & $module { param($value) Write-ConsoleSummary -Summary $value } $result } catch { [Console]::Error.WriteLine('결과 요약을 표시하지 못했습니다. 설치 결과는 로그 폴더의 summary.json을 확인하세요.') }
     exit ([int]$result.ExitCode)
 } catch {
     $message = $_.Exception.Message
