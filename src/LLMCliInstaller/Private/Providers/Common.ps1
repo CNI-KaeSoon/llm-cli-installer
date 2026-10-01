@@ -44,8 +44,10 @@ function Get-VerificationResult {
 
 function Test-PythonManagerList {
     param([string]$Text)
-    $runtimeMatches = [regex]::Matches([string]$Text, '(?m)(?<![0-9])3\.14(?:\.[0-9]+)?(?![0-9])')
-    return ($runtimeMatches.Count -eq 1)
+    # Count runtime rows, not occurrences: one real row repeats 3.14 in Tag, Name, Version and Alias,
+    # e.g. '3.14[-64]  *  Python 3.14.8  PythonCore  3.14.8   python3[-64].exe, python3.14[-64].exe'.
+    $runtimeRows = [regex]::Matches([string]$Text, '(?m)^[ \t]*(?:\*[ \t]*)?3\.14(?![0-9])')
+    return ($runtimeRows.Count -eq 1)
 }
 
 function Get-ClaudeDoctorClassification {

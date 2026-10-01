@@ -34,6 +34,10 @@ Describe 'Provider contracts' -Tag Unit {
             Test-PythonManagerList -Text '* 3.14.2' | Should -BeTrue
             Test-PythonManagerList -Text '3.13.9' | Should -BeFalse
             Test-PythonManagerList -Text "3.14.1`n3.14.2" | Should -BeFalse
+            # Real Windows 11 output (2026-10-02): one row mentions 3.14 four times.
+            $realList = "Tag           Name           Managed By  Version  Alias`r`n3.14[-64]  *  Python 3.14.8  PythonCore  3.14.8   python3[-64].exe, python3.14[-64].exe`r`n"
+            Test-PythonManagerList -Text $realList | Should -BeTrue
+            Test-PythonManagerList -Text "Tag  Name`n3.12-64  Python 3.12.10  PythonCore  3.12.10  python3.12.exe" | Should -BeFalse
         }
         It 'known Claude doctor guidance is warning only on exit zero' {
             (Get-ClaudeDoctorClassification -ExitCode 0 -Output 'Authentication required').Status | Should -Be 'VerifiedWithWarning'
