@@ -15,6 +15,14 @@ Describe 'Provider contracts' -Tag Unit {
                 foreach ($uri in @($item.OfficialUris)) { ([uri]$uri).Scheme | Should -Be 'https' }
             }
         }
+        It 'Python Install Manager is installed from the msstore source with UTF-8 output; other winget packages keep the winget source' {
+            Mock Invoke-SafeProcess { [pscustomobject]@{ ExitCode=0; TimedOut=$false; StdOut=''; StdErr=''; ResolvedPath='winget.exe'; CommandSummary='winget' } } -ParameterFilter { $FilePath -eq 'winget' }
+            Invoke-WinGetInstall -PackageId '9NQ7512CXL7T' -Source 'msstore' | Out-Null
+            Should -Invoke Invoke-SafeProcess -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'winget' -and $Utf8Output -and ($ArgumentList -join ' ') -match '--source msstore' }
+            Invoke-WinGetInstall -PackageId 'Git.Git' | Out-Null
+            Should -Invoke Invoke-SafeProcess -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'winget' -and ($ArgumentList -join ' ') -match '--source winget' }
+            (Get-Content -Raw (Join-Path $script:ModuleRoot 'Private/Providers/Providers.ps1')) | Should -Match ([regex]::Escape('-VendorLog $vendorLog -Source ''msstore'''))
+        }
         It 'Antigravity has no Node dependency' {
             @((Get-ComponentCatalog).antigravity.DependsOn).Count | Should -Be 0
         }

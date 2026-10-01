@@ -33,7 +33,8 @@ function Invoke-SafeProcess {
         [string[]]$ArgumentList = @(),
         [int]$TimeoutSeconds = 300,
         [hashtable]$Environment = @{},
-        [switch]$CloseInput
+        [switch]$CloseInput,
+        [switch]$Utf8Output
     )
     $resolved = Resolve-ApplicationCommand -FilePath $FilePath
     if (-not $resolved) {
@@ -52,6 +53,10 @@ function Invoke-SafeProcess {
     $info.RedirectStandardError = $true
     $info.RedirectStandardInput = [bool]$CloseInput
     $info.CreateNoWindow = $true
+    if ($Utf8Output) {
+        $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+        $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    }
     foreach ($argument in $ArgumentList) {
         $escaped = [string]$argument -replace '(\\*)"', '$1$1\"'
         if ($escaped -match '[\s"]') { $escaped = '"' + ($escaped -replace '(\\+)$', '$1$1') + '"' }
@@ -64,7 +69,17 @@ function Invoke-SafeProcess {
     if ($CloseInput) { $process.StandardInput.Close() }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    # Poll once per second so a long download shows elapsed time instead of a silent console.
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $exited = $false
+    while (-not $exited -and $stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        $exited = $process.WaitForExit(1000)
+        if (-not $exited -and $stopwatch.Elapsed.TotalSeconds -ge 3) {
+            Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Status ('경과 {0}분 {1}초' -f [int][Math]::Floor($stopwatch.Elapsed.TotalMinutes), $stopwatch.Elapsed.Seconds)
+        }
+    }
+    Write-Progress -Id 2 -Activity '작업 진행 중 (창을 닫지 마세요)' -Completed
+    if (-not $exited) {
         # Only the process this product started is terminated; never an unrelated user process.
         try { $process.Kill() } catch { $null = $_ }
         # A grandchild may still hold the pipe open, so stdout is awaited for a bounded time only and stderr is not awaited.

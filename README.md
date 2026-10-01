@@ -21,7 +21,11 @@ Get-Content .\llm-cli-installer-v2.0.1.zip.sha256
 
 ### 실행
 
-ZIP을 내려받아 압축을 푼 디렉터리에서 Windows PowerShell 5.1을 열고 실행합니다.
+가장 쉬운 방법: 압축을 푼 폴더에서 `install.bat`을 더블클릭합니다. 모든 구성요소(`-Components all`)를 설치하고, 끝나면 종료 코드를 보여 준 뒤 창을 닫지 않고 기다립니다. 실행 정책은 이번 실행에만 `Bypass`로 적용되고 시스템 설정은 바뀌지 않습니다. 인자를 주면 그대로 `install.ps1`에 넘깁니다(예: `install.bat -Components codex,claude`).
+
+`.\install.ps1`을 직접 실행하면 인터넷에서 받은 파일이어서 "디지털 서명되지 않았습니다" 오류로 막힐 수 있습니다. 이때는 `install.bat`을 쓰거나 아래 명령을 사용하세요.
+
+PowerShell에서 직접 실행하려면 ZIP을 압축 해제한 디렉터리에서 Windows PowerShell 5.1을 열고 실행합니다.
 
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Components all

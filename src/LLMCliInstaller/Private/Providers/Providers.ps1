@@ -42,7 +42,8 @@ function Install-Component {
             return [pscustomobject]@{ Process=$process; StableCode=$npmCode; RestartRequired=$false }
         }
         'python-manager' {
-            $manager = Invoke-WinGetInstall -PackageId $Definition.PackageId -VendorLog $vendorLog
+            # 9NQ7512CXL7T is a Microsoft Store ID; the winget community source does not list it.
+            $manager = Invoke-WinGetInstall -PackageId $Definition.PackageId -VendorLog $vendorLog -Source 'msstore'
             if ($manager.StableCode -ne 0 -and -not $manager.RestartRequired) { return $manager }
             Update-ProcessPath | Out-Null
             $process = Invoke-SafeProcess -FilePath 'pymanager' -ArgumentList @('install', '3.14') -TimeoutSeconds 900 -Environment @{ PYTHON_MANAGER_CONFIRM='false' } -CloseInput:$NonInteractive

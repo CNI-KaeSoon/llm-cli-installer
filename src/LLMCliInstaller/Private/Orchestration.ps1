@@ -109,6 +109,8 @@ function Invoke-LlmCliInstaller {
     Initialize-RunLogging -Context $context -RequestedRoot $LogRoot | Out-Null
     Write-RunEvent $context 'run' 'started' $null '설치기 실행을 시작합니다.' 0 @{ selected=$selected; whatIf=[bool]$WhatIfPreference; allowUpgrade=[bool]$AllowUpgrade; existingInstallPolicy=$migration.Policy; migrationComponents=@($migration.Components) }
     Move-RunState $context 'Preflight' | Out-Null
+    Write-ConsoleStep ''
+    Write-ConsoleStep '[1/3] 컴퓨터 환경을 확인하는 중입니다...' 'Cyan'
     $platform = Get-PlatformDiagnostic
     if (-not $platform.IsSupported -and -not $WhatIfPreference) {
         Write-RunEvent $context 'preflight' 'failed' $null 'Windows 11 x64에서만 실행할 수 있습니다.' 10 @{ architecture=$platform.Architecture }
@@ -173,9 +175,13 @@ function Invoke-LlmCliInstaller {
             Write-RunEvent $context 'selection' 'warning' 'legacy-gemini' 'Legacy Gemini는 Enterprise, Google Cloud 또는 유료 API 키 사용자를 위한 고급 선택입니다. 로그인은 자동화하지 않습니다.' 0 $null
         }
         Move-RunState $context 'Diagnosing' | Out-Null
+        Write-ConsoleStep '[2/3] 이미 설치된 프로그램을 확인하는 중입니다...' 'Cyan'
         $plans = @{}
         $resultById = @{}
+        $checkIndex = 0
         foreach ($id in $ordered) {
+            $checkIndex++
+            Write-Progress -Id 1 -Activity 'LLM CLI 설치: 설치 상태 확인' -Status ('{0} 확인 중 ({1}/{2})' -f $catalog[$id].DisplayName, $checkIndex, $ordered.Count) -PercentComplete ([int](($checkIndex - 1) * 100 / $ordered.Count))
             $result = New-ComponentResult -Id $id
             [void]$context.Components.Add($result)
             $resultById[$id] = $result
@@ -188,10 +194,14 @@ function Invoke-LlmCliInstaller {
                 if ($status.State -eq 'Satisfied') {
                     $result.Version = $status.Verification.Version
                     $result.ResolvedPath = $status.Verification.Process.ResolvedPath
+                    Write-ConsoleStep ('      {0}: 이미 설치됨 (버전 {1})' -f $catalog[$id].DisplayName, $result.Version) 'Green'
+                } else {
+                    Write-ConsoleStep ('      {0}: 설치 필요' -f $catalog[$id].DisplayName) 'Yellow'
                 }
             }
         }
 
+        Write-Progress -Id 1 -Activity 'LLM CLI 설치: 설치 상태 확인' -Completed
         # Inventory is read-only for every component; keep is the default decision (§2.1).
         Move-RunState $context 'Inventorying' | Out-Null
         $inventories = @{}
@@ -253,14 +263,23 @@ function Invoke-LlmCliInstaller {
         $migrating = @($ordered | Where-Object { $migrationPlans[$_].Decision -eq 'Migrate' })
         if ($migrating.Count -gt 0) { Move-RunState $context 'Migrating' | Out-Null }
         Move-RunState $context 'Installing' | Out-Null
+        $toInstall = @($ordered | Where-Object { $resultById[$_].State -eq 'Planned' })
+        $installIndex = 0
+        if ($toInstall.Count -gt 0) {
+            Write-ConsoleStep ('[3/3] 프로그램 {0}개를 설치합니다. 인터넷에서 내려받으므로 몇 분에서 수십 분 걸릴 수 있습니다. 창을 닫지 마세요.' -f $toInstall.Count) 'Cyan'
+        } else {
+            Write-ConsoleStep '[3/3] 새로 설치할 프로그램이 없습니다. 설치된 프로그램이 잘 실행되는지 확인합니다...' 'Cyan'
+        }
         foreach ($id in $ordered) {
             $result = $resultById[$id]
             $definition = $catalog[$id]
+            $stepWatch = [Diagnostics.Stopwatch]::StartNew()
             $blockedBy = @($definition.DependsOn | Where-Object { $resultById.ContainsKey($_) -and $resultById[$_].State -notin @('Verified', 'VerifiedWithWarning') })
             if ($blockedBy.Count -gt 0) {
                 if ($result.State -eq 'Planned') { Move-ComponentState $result 'UnattemptedBlocked' | Out-Null }
                 Set-ComponentFailure $result 40 ("선행 구성요소 실패: {0}" -f ($blockedBy -join ', ')) | Out-Null
                 Write-RunEvent $context 'install' 'blocked' $id $result.Message $result.PrimaryCode @{ blockedBy=$blockedBy }
+                Write-ConsoleStep ('      {0}: 건너뜀 (먼저 필요한 프로그램 설치가 실패함)' -f $definition.DisplayName) 'Yellow'
                 continue
             }
             if ($migrationPlans[$id].Decision -eq 'Migrate' -and $result.State -eq 'Planned') {
@@ -274,6 +293,9 @@ function Invoke-LlmCliInstaller {
                     Move-ComponentState $result 'Verifying' | Out-Null
                 } else {
                     Move-ComponentState $result 'Installing' | Out-Null
+                    $installIndex++
+                    Write-Progress -Id 1 -Activity 'LLM CLI 설치' -Status ('{0} 설치 중 ({1}/{2})' -f $definition.DisplayName, $installIndex, $toInstall.Count) -PercentComplete ([int](($installIndex - 1) * 100 / $toInstall.Count))
+                    Write-ConsoleStep ('  ({0}/{1}) {2} 내려받아 설치하는 중...' -f $installIndex, $toInstall.Count, $definition.DisplayName) 'White'
                     Write-RunEvent $context 'install' 'started' $id '공식 설치 채널을 실행합니다.' 0 @{ channel=$definition.Install }
                     $install = Install-Component -Id $id -Definition $definition -Context $context -NonInteractive:$NonInteractive
                     $result.RawExitCode = $install.Process.ExitCode
@@ -287,6 +309,7 @@ function Invoke-LlmCliInstaller {
                         Move-ComponentState $result 'InstallFailed' | Out-Null
                         Set-ComponentFailure $result $install.StableCode (Get-OutputTail -Text (($install.Process.StdErr, $install.Process.StdOut) -join ' ') -MaxLength 4000) $install.Process.ExitCode | Out-Null
                         Write-RunEvent $context 'install' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode; commandSummary=$result.CommandSummary }
+                        Write-ConsoleStep ('      {0}: 설치 실패 (오류 코드 {1})' -f $definition.DisplayName, $result.PrimaryCode) 'Red'
                         continue
                     }
                     if ($install.RestartRequired) { Move-ComponentState $result 'RestartRequired' | Out-Null }
@@ -300,10 +323,12 @@ function Invoke-LlmCliInstaller {
                     $result.Version = $verification.Version
                     $result.ResolvedPath = $verification.Process.ResolvedPath
                     Write-RunEvent $context 'verify' 'completed' $id ("버전 {0} 검증 성공" -f $result.Version) 0 @{ resolvedPath=$result.ResolvedPath }
+                    Write-ConsoleStep ('      {0}: 완료 (버전 {1}, {2})' -f $definition.DisplayName, $result.Version, (Format-ConsoleElapsed $stepWatch.Elapsed)) 'Green'
                 } else {
                     Move-ComponentState $result 'VerificationFailed' | Out-Null
                     Set-ComponentFailure $result $verification.Code '새 프로세스 버전 검증에 실패했습니다.' $verification.Process.ExitCode | Out-Null
                     Write-RunEvent $context 'verify' 'failed' $id $result.Message $result.PrimaryCode @{ rawExitCode=$result.RawExitCode }
+                    Write-ConsoleStep ('      {0}: 설치 후 실행 확인 실패 (오류 코드 {1})' -f $definition.DisplayName, $result.PrimaryCode) 'Red'
                 }
             } catch {
                 $failure = $_.Exception.Message
@@ -313,9 +338,11 @@ function Invoke-LlmCliInstaller {
                 elseif ($result.State -eq 'Verifying') { Move-ComponentState $result 'VerificationFailed' | Out-Null }
                 Set-ComponentFailure $result $failureCode ('설치/검증 중 예외: ' + $failure) | Out-Null
                 Write-RunEvent $context 'install' 'exception' $id $result.Message $failureCode $null
+                Write-ConsoleStep ('      {0}: 오류로 중단 (오류 코드 {1})' -f $definition.DisplayName, $failureCode) 'Red'
                 continue
             }
         }
+        Write-Progress -Id 1 -Activity 'LLM CLI 설치' -Completed
         Move-RunState $context 'RefreshingEnvironment' | Out-Null
         Update-ProcessPath | Out-Null
         Move-RunState $context 'Verifying' | Out-Null

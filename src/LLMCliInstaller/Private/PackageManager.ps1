@@ -1,8 +1,9 @@
 ﻿function Invoke-WinGetInstall {
-    param([string]$PackageId, [string]$VendorLog, [int]$TimeoutSeconds = 900)
-    $arguments = @('install', '--id', $PackageId, '--exact', '--source', 'winget', '--silent', '--disable-interactivity', '--accept-package-agreements', '--accept-source-agreements')
+    param([string]$PackageId, [string]$VendorLog, [int]$TimeoutSeconds = 900, [ValidateSet('winget', 'msstore')][string]$Source = 'winget')
+    $arguments = @('install', '--id', $PackageId, '--exact', '--source', $Source, '--silent', '--disable-interactivity', '--accept-package-agreements', '--accept-source-agreements')
     if ($VendorLog) { $arguments += @('--log', $VendorLog) }
-    $result = Invoke-SafeProcess -FilePath 'winget' -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds -CloseInput
+    # winget writes UTF-8; decoding with the OEM code page garbles Korean error messages.
+    $result = Invoke-SafeProcess -FilePath 'winget' -ArgumentList $arguments -TimeoutSeconds $TimeoutSeconds -CloseInput -Utf8Output
     $stableCode = 0
     if ($result.ExitCode -eq 127) { $stableCode = 22 }
     elseif ($result.TimedOut) { $stableCode = 20 }

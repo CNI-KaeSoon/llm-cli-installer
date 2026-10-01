@@ -8,7 +8,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($AppRoot).TrimEnd('\', '/')
-$topLevelFiles = @('install.ps1', 'README.md', 'SECURITY.md', 'PSScriptAnalyzerSettings.psd1', '.gitattributes', '.gitignore')
+$topLevelFiles = @('install.ps1', 'install.bat', 'README.md', 'SECURITY.md', 'PSScriptAnalyzerSettings.psd1', '.gitattributes', '.gitignore')
 $recursiveDirectories = @('src', 'docs', 'tests', 'tools')
 $relativePaths = New-Object System.Collections.ArrayList
 foreach ($name in $topLevelFiles) {

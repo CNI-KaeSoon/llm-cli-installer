@@ -66,8 +66,8 @@ try {
     if ($LogRoot) { $arguments.LogRoot = $LogRoot }
     if ($WhatIfPreference) { $arguments.WhatIf = $true }
     $result = Invoke-LlmCliInstaller @arguments
-    # Console output goes through the same masking as the log files.
-    & $module { param($value) ConvertTo-SafeJson -Value $value } $result
+    # Plain-language result for the console; the full masked JSON stays in summary.json in the log folder.
+    & $module { param($value) Write-ConsoleSummary -Summary $value } $result
     exit ([int]$result.ExitCode)
 } catch {
     $message = $_.Exception.Message
