@@ -1,0 +1,45 @@
+#!/bin/bash
+# 테스트용 가짜 curl
+FIXDIR="$(cd "$(dirname "$0")/.." && pwd)/fixtures/installers"
+OUT_FILE=""
+W_FMT=""
+URL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) OUT_FILE="${2-}"; shift 2 ;;
+    -w) W_FMT="${2-}"; shift 2 ;;
+    --proto|--proto-redir|--max-redirs|--max-filesize|--connect-timeout|--max-time) shift 2 ;;
+    -*) shift ;;
+    *) URL="$1"; shift ;;
+  esac
+done
+echo "CURL $URL" >> "${STUB_LOG:-/dev/null}"
+if [ -n "${STUB_CURL_FAIL_URL-}" ]; then
+  case "$URL" in
+    *"$STUB_CURL_FAIL_URL"*) exit 6 ;;
+  esac
+fi
+if [ -n "${STUB_CURL_EXIT-}" ]; then
+  exit "$STUB_CURL_EXIT"
+fi
+BODY=""
+if [ -n "${STUB_CURL_BODY_FILE-}" ]; then
+  BODY="$STUB_CURL_BODY_FILE"
+else
+  case "$URL" in
+    https://chatgpt.com/codex/install.sh) BODY="$FIXDIR/codex.sh" ;;
+    https://claude.ai/install.sh) BODY="$FIXDIR/claude.sh" ;;
+    https://antigravity.google/cli/install.sh) BODY="$FIXDIR/antigravity.sh" ;;
+    https://x.ai/cli/install.sh) BODY="$FIXDIR/grok.sh" ;;
+    *) exit 22 ;;
+  esac
+fi
+if [ -n "$OUT_FILE" ]; then
+  cp "$BODY" "$OUT_FILE" || exit 23
+else
+  cat "$BODY"
+fi
+if [ -n "$W_FMT" ]; then
+  printf '%s' "${STUB_CURL_EFFECTIVE_URL:-$URL}"
+fi
+exit 0

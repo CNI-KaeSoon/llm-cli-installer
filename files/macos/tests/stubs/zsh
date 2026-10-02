@@ -1,0 +1,33 @@
+#!/bin/bash
+# 테스트용 가짜 zsh: zsh -lic '<스크립트>' llmcli <이름> 형태만 흉내 낸다.
+# 출력은 LLMCLI_PATH:<경로> 한 줄(못 찾으면 LLMCLI_PATH: 한 줄, 종료 0).
+# STUB_ZSH_NOISE가 있으면 그 문자열을 한 줄 더 출력한다(zlogout 잡음 흉내).
+NAME=""
+for a in "$@"; do NAME="$a"; done
+[ -z "$NAME" ] && exit 1
+DIRS=()
+RC_FILES="$HOME/.zprofile $HOME/.zshrc"
+if cat $RC_FILES 2> /dev/null | grep -qF '.local/bin'; then
+  DIRS+=("$HOME/.local/bin")
+fi
+if cat $RC_FILES 2> /dev/null | grep -qF '.grok/bin'; then
+  DIRS+=("$HOME/.grok/bin")
+fi
+if [ -n "${STUB_ZSH_PATH-}" ]; then
+  OLDIFS="$IFS"
+  IFS=':'
+  for d in $STUB_ZSH_PATH; do
+    [ -n "$d" ] && DIRS+=("$d")
+  done
+  IFS="$OLDIFS"
+fi
+for d in "${DIRS[@]}"; do
+  if [ -x "$d/$NAME" ] && [ -f "$d/$NAME" ]; then
+    printf 'LLMCLI_PATH:%s\n' "$d/$NAME"
+    [ -n "${STUB_ZSH_NOISE-}" ] && printf '%s\n' "$STUB_ZSH_NOISE"
+    exit 0
+  fi
+done
+printf 'LLMCLI_PATH:\n'
+[ -n "${STUB_ZSH_NOISE-}" ] && printf '%s\n' "$STUB_ZSH_NOISE"
+exit 0
