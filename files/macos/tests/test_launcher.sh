@@ -6,7 +6,7 @@ test_launcher_runs_main() {
   out="$(/bin/bash "$SANDBOX/pkg/installer-mac.command" --version < /dev/null 2>&1)"
   rc=$?
   assert_exit 0 "$rc" "launcher exit"
-  assert_contains "$out" "1.0.0"
+  assert_contains "$out" "3.0.0"
   assert_contains "$out" "종료 코드: 0"
 }
 

@@ -1,4 +1,4 @@
-# Windows LLM CLI Installer v2.0.1
+# Windows LLM CLI Installer v3.0.0
 
 Windows 11 x64에서 Codex CLI, Claude Code, Antigravity CLI, Grok CLI 중 고른 것과 그 CLI에 필요한 항목(Claude Code는 Git, Grok CLI는 Node.js 22+)만 공식 배포처를 통해 설치하고 새 프로세스에서 버전을 검증합니다. v2는 비표준 위치의 기존 설치를 **유지(기본)**하거나, 사용자가 명시적으로 선택한 경우 소유권이 증명된 항목만 공식 제거기로 제거한 뒤 정본 위치에 재설치(**이전**)합니다.
 
@@ -8,11 +8,11 @@ Google 계정의 기본 도구는 **Antigravity CLI**입니다. `all`, `google`,
 
 ### 내려받은 ZIP 확인(권장)
 
-GitHub Release에서 `llm-cli-installer-v2.0.1.zip`과 `llm-cli-installer-v2.0.1.zip.sha256`을 함께 내려받고, 압축을 풀기 전에 두 값이 같은지 확인합니다.
+GitHub Release에서 `llm-cli-installer-v3.0.0.zip`과 `llm-cli-installer-v3.0.0.zip.sha256`을 함께 내려받고, 압축을 풀기 전에 두 값이 같은지 확인합니다.
 
 ```powershell
-(Get-FileHash .\llm-cli-installer-v2.0.1.zip -Algorithm SHA256).Hash.ToLower()
-Get-Content .\llm-cli-installer-v2.0.1.zip.sha256
+(Get-FileHash .\llm-cli-installer-v3.0.0.zip -Algorithm SHA256).Hash.ToLower()
+Get-Content .\llm-cli-installer-v3.0.0.zip.sha256
 ```
 
 이 비교는 내려받는 중 파일이 손상됐는지만 확인합니다. ZIP과 `.sha256`은 같은 GitHub Release에서 받으므로 배포 채널이 변조되면 둘이 함께 바뀔 수 있고, 따라서 누가 만든 파일인지(진위)는 증명하지 않습니다. 자세한 한계는 [SECURITY.md](SECURITY.md)의 "릴리스 무결성"을 참고하세요.

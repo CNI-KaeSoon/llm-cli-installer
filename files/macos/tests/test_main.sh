@@ -311,7 +311,7 @@ test_help_and_version() {
   rc=0
   run_main --version < /dev/null || rc=$?
   assert_exit 0 "$rc"
-  assert_eq "1.0.0" "$(cat "$SANDBOX/out.txt")"
+  assert_eq "3.0.0" "$(cat "$SANDBOX/out.txt")"
 }
 
 _pathonly_prepare() {

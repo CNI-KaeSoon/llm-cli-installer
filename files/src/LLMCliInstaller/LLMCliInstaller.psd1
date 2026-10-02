@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'LLMCliInstaller.psm1'
-    ModuleVersion = '2.0.1'
+    ModuleVersion = '3.0.0'
     GUID = 'f802424d-c932-4f40-92a7-6982cc12fe91'
     Author = 'LLM CLI Installer contributors'
     CompanyName = 'Community'
